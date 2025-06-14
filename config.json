@@ -1,0 +1,15 @@
+{
+  "discogs": {
+    "userToken": "KPjUNiwQJADwpRdoLzbNWdHwRNSjLSOezeQpwDas",
+    "rateLimitDelay": 1000
+  },
+  "files": {
+    "includeSubdirectories": true,
+    "fileExtensions": [".mp3", ".flac"]
+  },
+  "logging": {
+    "verbose": true,
+    "logFile": "logs/main.log",
+    "notfoundFile": "logs/notfound.log"
+  }
+}
