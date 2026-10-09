@@ -396,8 +396,19 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 						shortText: verTagValue,
 						language: 'eng',
 					},
-					country,
-					// TXXX: country или так? TXXX: [{ description: 'Country', value: country }],
+					// Country is written twice because no single frame works everywhere:
+					// - ID3v2.3 has no standard country frame; TXXX:COUNTRY is the de facto convention
+					//   (foobar2000 shows it as %country%), but the Windows MP3 property handler ignores
+					//   TXXX entirely - the Explorer "Country/region" column stays empty (checked empirically).
+					// - So for Explorer we hijack TPE3 ("Conductors" column): one of the few frames Explorer
+					//   displays, and practically always empty for non-classical music. Rejected alternatives:
+					//   TPUB (Publisher) is the label, TKEY (Initial key) is read by DJ software,
+					//   TIT3 (Subtitle) carries real data, TENC (Encoded by) is often pre-filled,
+					//   TIT1/TMOO/TOPE/TPE4 are not shown by Explorer at all.
+					...(country && {
+						conductor: country,
+						userDefinedText: [{ description: 'COUNTRY', value: country }],
+					}),
 					// ещё надо попробовать windows media attributes и NTFS metadata
 				};
 				if (forceWriteTags || areTagsEqual(existingTags, tagsToUpdate)) {
