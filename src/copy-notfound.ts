@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+/**
+ * Штука, которая копирует ненайденные треки в GTAGGER_TEST_TRACKS для дальнейшей отладки
+ * npm run copy-notfound -- -i C:\\SYMLINKS\\GITROOT\\_my\\g-tagger\\logs\\2025-07-24__22-44-00_notfound.json
+ */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { program } from 'commander';
@@ -14,7 +18,7 @@ program
 	.description('Copy files listed in JSON to target directory')
 	.version('1.0.0')
 	.requiredOption('-i, --input <path>', 'Absolute path to input JSON file')
-	.requiredOption('-o, --output <path>', 'Absolute path to output directory', `C:\\Users\\st-user\\Desktop\\VKADD+`)
+	.requiredOption('-o, --output <path>', 'Absolute path to output directory', `D:\\GTAGGER_TEST_TRACKS`)
 	.action(async (options) => {
 		await copyFiles(options.input, options.output);
 	});
@@ -23,17 +27,13 @@ program.parseAsync(process.argv).catch(console.error);
 
 async function copyFiles(jsonPath: string, outputDir: string) {
 	try {
-		// Verify and create output directory
 		await fs.mkdir(outputDir, { recursive: true });
-
-		// Read and parse JSON file
 		const data = await fs.readFile(jsonPath, 'utf-8');
 		const files: FileEntry[] = JSON.parse(data);
 
 		let successCount = 0;
 		let errorCount = 0;
 
-		// Process each file
 		for (const file of files) {
 			if (!file.filePath) {
 				console.warn('Skipping entry with missing filePath');

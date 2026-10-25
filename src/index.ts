@@ -17,6 +17,7 @@ program
 	.argument('[dir]', 'Директория с музыкой, например, C:\\Users\\st-user\\Desktop\\VKADD+')
 	.option('-f, --force', 'Писать теги, даже если они совпадают с текущими', false)
 	.option('--subdir', 'Обрабатывать также поддиректории', false)
+	.option('--request_delay <ms>', 'Задержка между запросами в API (в миллисекундах)', '2000')
 	.action(async (dir, options: GtaggerCliOptions) => {
 		if (!dir) {
 			console.error(`Укажите директорию с музыкой!`);

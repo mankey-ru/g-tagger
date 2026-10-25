@@ -3,19 +3,23 @@
 type GetDataFromDiscogsResult = {
 	genreStyle: string;
 	discogsReleaseData: DiscogsReleaseData;
+	taggerStage: string;
 };
 
 type ProcessAudioFileResult = {
-	success: boolean;
-	skipped?: boolean;
+	isWroteTags: boolean;
+	/** Discogs data found, but tags already match, so the file was not rewritten */
+	isTagsUnchanged?: boolean;
+	isSkipped?: boolean;
 	skippedItem?: GtaggerSkippedItem;
 	error?: string;
 	genre?: string;
 };
 
 type GtaggerStats = {
-	processed: number;
-	skipped: number;
+	qtyWrittenTags: number;
+	qtyUnchangedTags: number;
+	qtySkipped: number;
 	skippedList: GtaggerSkippedItem[];
 	failed: number;
 };
@@ -33,4 +37,6 @@ type GtaggerCliOptions = {
 	force: boolean;
 	/** includeSubdirectories - Обрабатывать также поддиректории */
 	subdir: boolean;
+	/** количество миллисекунд между запросами */
+	request_delay: string;
 };

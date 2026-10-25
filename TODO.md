@@ -19,3 +19,8 @@
    `src/index.ts`, `src/copy-notfound.ts`, `package.json`, `test/*.test.ts`. Продумать тесты: что покрыто
    `test/fixWin1251.test.ts` и `test/normalizeTitle.test.ts`, чего не хватает. Заодно решить судьбу
    `.lnk`-ярлыков, `tmp/`, `src/.npmrc`, `mcps/`, `g-tagger.code-workspace` (коммитить или в `.gitignore`).
+4. **ВТОРОЙ ПРИОРИТЕТ.** В URL remote `origin` открытым текстом лежит GitHub token (виден в `git remote -v`
+   и `.git/config`). Отозвать токен на GitHub (Settings -> Developer settings -> Personal access tokens),
+   затем `git remote set-url origin https://github.com/mankey-ru/g-tagger.git` и авторизоваться через
+   Git Credential Manager.
+5. пофиксить звёздочки в глоб-паттерне

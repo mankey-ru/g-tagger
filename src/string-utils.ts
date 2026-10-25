@@ -107,21 +107,45 @@ export function normalizeArtist(str: string): string {
 export function getAllKindsOfNames(tagArtist: string | undefined, tagTitle: string | undefined, fileName: string) {
 	const { filenameArtist, filenameTitle } = getArtistAndTitleFromFilename(fileName);
 
-	if (!tagArtist) tagArtist = filenameArtist;
-	if (!tagTitle) tagTitle = filenameTitle;
+	// для битой кодировки в тегах типа Íèíà Áðîäñêàÿ
+	// если в тегах артиста/тайтла нет - добиваем из имени файла
+	if (!tagArtist) {
+		tagArtist = filenameArtist;
+	}
+	if (!tagTitle) {
+		tagTitle = filenameTitle;
+	}
+	//console.log(`BEFORE fixWin1251: tagArtist=${tagArtist}, tagTitle=${tagTitle}`);
+	tagArtist = fixWin1251(tagArtist);
+	tagTitle = fixWin1251(tagTitle);
+
+	// console.log(`tagArtist=${tagArtist}, tagTitle=${tagTitle}, filenameArtist=${filenameArtist}, filenameTitle=${filenameTitle}`);
 
 	const normalizedArtist = normalizeArtist(tagArtist);
 	const normalizedTitle = normalizeTitle(tagTitle);
 	const normalizedFilenameArtist = normalizeArtist(filenameArtist);
 	const normalizedFilenameTitle = normalizeTitle(filenameTitle);
 
+	const defaultNormalizeTitleOptions = { forceRemoveBrackets: true };
+	const normalizedTitleCut1 = normalizeTitle(tagTitle, defaultNormalizeTitleOptions);
+	const normalizedTitleCut2 = normalizeTitle(tagTitle, {
+		...defaultNormalizeTitleOptions,
+		forceRemoveSeparatedEnd: true,
+	});
+	const normalizedFilenameTitleCut = normalizeTitle(filenameTitle, defaultNormalizeTitleOptions);
+
 	return {
+		fixedTagArtist: tagArtist,
+		fixedTagTitle: tagTitle,
 		filenameArtist,
 		filenameTitle,
 		normalizedArtist,
 		normalizedTitle,
+		normalizedTitleCut1,
+		normalizedTitleCut2,
 		normalizedFilenameArtist,
 		normalizedFilenameTitle,
+		normalizedFilenameTitleCut,
 	};
 }
 
@@ -197,5 +221,54 @@ function normalizeArtistTest(): void {
 			console.error(`«${input}» result was «${result}», but expected «${expected}»`);
 			throw new Error(`normalizeArtist test error`);
 		}
+	}
+}
+
+export function fixWin1251(str: string): string {
+	// Check if the string appears to be UTF-8 text misinterpreted as Latin-1
+	if (needsWin1251Fix(str)) {
+		const fixed = fixMisinterpretedWin1251(str);
+		// console.log(`${str} appears to be misinterpreted Windows-1251. Fixed to ${fixed}`);
+		return fixed;
+	}
+	return str;
+}
+
+// Latin-1 chars that Win1251 Cyrillic bytes turn into: А-я (0xC0-0xFF) plus Ёё Іі Єє Її Ґґ Ўў
+const win1251CyrillicAsLatin1 = 'À-ÿ¨¸²³ªº¯¿¥´¡¢';
+const mojibakeCharRe = new RegExp(`[${win1251CyrillicAsLatin1}]`);
+const wordRe = new RegExp(`[A-Za-z${win1251CyrillicAsLatin1}]+`, 'g');
+
+function needsWin1251Fix(str: string): boolean {
+	// Mojibake words consist of high Latin-1 chars only, since every Cyrillic letter maps there.
+	// Real Latin diacritics (Café, Björk, Abrão) always sit next to ASCII letters in the same word.
+	const words = str.match(wordRe) ?? [];
+	const mojibakeWords = words.filter((word) => !/[A-Za-z]/.test(word));
+	if (words.some((word) => /[A-Za-z]/.test(word) && mojibakeCharRe.test(word))) {
+		return false;
+	}
+	// A lone one-letter word like "à" in "Voyage à Paris" is not enough evidence, unless it is the whole text
+	return mojibakeWords.some((word) => word.length > 1) || (mojibakeWords.length > 0 && !/[A-Za-z]/.test(str));
+}
+
+function fixMisinterpretedWin1251(str: string): string {
+	try {
+		// Convert string characters to bytes (assuming they represent Windows-1251)
+		const bytes = new Uint8Array(str.length);
+		for (let i = 0; i < str.length; i++) {
+			const charCode = str.charCodeAt(i);
+			if (charCode > 255) {
+				// If we encounter non-Latin-1 characters, this approach won't work
+				return str;
+			}
+			bytes[i] = charCode;
+		}
+
+		// Decode as Windows-1251
+		const decoder = new TextDecoder('windows-1251');
+		return decoder.decode(bytes);
+	} catch (error) {
+		// If anything goes wrong, return the original string
+		return str;
 	}
 }

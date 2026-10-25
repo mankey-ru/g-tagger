@@ -4,20 +4,21 @@ import ID3 from 'node-id3';
 import axios, { AxiosResponse } from 'axios';
 import { discogsUserToken, appVersion, trPad } from './common.js';
 import { log, notFoundLogger, logStart, logEnd } from './logging.js';
-import { normalizeTitle, getAllKindsOfNames } from './string-utils.js';
+import { getAllKindsOfNames, fixWin1251 } from './string-utils.js';
 
 export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): Promise<void> {
 	await logStart();
 
 	const includeSubdirectories = cliOptions.subdir;
 	const forceWriteTags: boolean = cliOptions.force;
+	const discogsRequestDelay: number = Number(cliOptions.request_delay);
 	const fileExtensions = ['.mp3', '.flac'];
 	const genreDelimiter = '➤';
 	// Конфигурим запросы в Discogs
 	const discogsRequest = axios.create({
 		baseURL: 'https://api.discogs.com',
 		headers: {
-			'User-Agent': 'MP3GenreTagger/1.0',
+			'User-Agent': `GTagger/${appVersion}`,
 			Authorization: `Discogs token=${discogsUserToken}`,
 		},
 		timeout: 10000,
@@ -26,7 +27,7 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 	// Погнали!
 	// Всё ниже - функции
 	// ---------------------------------------------------------------------
-	return await mainFuncInternal();
+	await mainFuncInternal();
 
 	async function mainFuncInternal(): Promise<void> {
 		try {
@@ -38,15 +39,15 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 			const audioFiles = await findAudioFiles(musDir);
 			const audioFilesExtStr = fileExtensions.join(', ');
 			if (audioFiles.length === 0) {
-				log(`Не найдено файлов с заданными расширениями (${audioFilesExtStr})`);
-				return;
+				throw new Error(`Не найдено файлов с заданными расширениями (${audioFilesExtStr})`);
 			}
 			log(
-				`${trPad}Начинаем обработку ${audioFiles.length} файлов (искали по расширениям ${audioFilesExtStr})...`
+				`${trPad}Начинаем обработку ${audioFiles.length} файлов (искали по расширениям ${audioFilesExtStr})...`,
 			);
 			const stats: GtaggerStats = {
-				processed: 0,
-				skipped: 0,
+				qtyWrittenTags: 0,
+				qtyUnchangedTags: 0,
+				qtySkipped: 0,
 				skippedList: [],
 				failed: 0,
 			};
@@ -54,13 +55,18 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 			for (const file of audioFiles) {
 				const result = await processAudioFile(file);
 
-				if (result.success) {
-					stats.processed++;
-				} else if (result.skipped) {
-					stats.skipped++;
+				if (result.isWroteTags) {
+					stats.qtyWrittenTags++;
+				} else if (result.isTagsUnchanged) {
+					stats.qtyUnchangedTags++;
+				} else if (result.isSkipped) {
+					stats.qtySkipped++;
 					if (result.skippedItem) {
 						stats.skippedList.push(result.skippedItem);
-						notFoundLogger.writeItem(result.skippedItem);
+						// notfound.json feeds copy-notfound, so already processed files do not belong there
+						if (result.skippedItem.skippedReason === 'NO_DISCOGS_RESULT') {
+							notFoundLogger.writeItem(result.skippedItem);
+						}
 					}
 				} else {
 					stats.failed++;
@@ -68,7 +74,12 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 			}
 
 			log('\nУспех:');
-			log(`${trPad}Обработано успешно (включая те, у которых теги не изменились): ${stats.processed}`);
+			const qtyAlreadyProcessed = stats.skippedList.filter(
+				(item) => item.skippedReason === 'ALREADY_PROCESSED',
+			).length;
+			log(`${trPad}Теги прописаны в ${stats.qtyWrittenTags} файлов`);
+			log(`${trPad}Теги совпали, файл не перезаписан: ${stats.qtyUnchangedTags} файлов`);
+			log(`${trPad}Пропущено как уже обработанные этой версией: ${qtyAlreadyProcessed} файлов`);
 			log(`${trPad}Обработано с ошибкой: ${stats.failed}`);
 			const skippedFilesSep = `\n${trPad}${trPad}`;
 			const skippedFilesStr = stats.skippedList.length
@@ -77,7 +88,9 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 						.join(skippedFilesSep)}`
 				: '';
 			// const skippedFilesObjStr = JSON.stringify(stats.skippedList, null, '\t');
-			log(`${trPad}Не найден жанр: ${stats.skipped} шт.${skippedFilesStr}`);
+			log(
+				`${trPad}Не найдено в Discogs: ${stats.qtySkipped - qtyAlreadyProcessed} шт. Все пропущенные:${skippedFilesStr}`,
+			);
 		} catch (error) {
 			log(`Фатальная ошибка: ${(error as Error).message}`);
 			process.exit(1);
@@ -90,31 +103,35 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 	async function getDataFromDiscogs(
 		tagArtist: string | undefined,
 		tagTitle: string | undefined,
-		fileName: string
+		fileName: string,
 	): Promise<GetDataFromDiscogsResult | null> {
 		const allKindsOfNames = getAllKindsOfNames(tagArtist, tagTitle, fileName);
 		const {
+			fixedTagArtist,
+			fixedTagTitle,
 			filenameArtist,
 			filenameTitle,
 			normalizedArtist,
 			normalizedTitle,
+			normalizedTitleCut1,
+			normalizedTitleCut2,
 			normalizedFilenameArtist,
 			normalizedFilenameTitle,
+			normalizedFilenameTitleCut,
 		} = allKindsOfNames;
 
 		try {
-			// TODO криво же
-			if (!tagArtist) tagArtist = filenameArtist;
-			if (!tagTitle) tagTitle = filenameTitle;
+			// Be nice to Discogs API
+			// throw new Error('111');
+			console.log(`----------> Ждём ${discogsRequestDelay}мс перед следующим запросом...`);
+			await new Promise((resolve) => setTimeout(resolve, discogsRequestDelay));
 
-			// TODO перенести в getAllKindsOfNames
-			const defaultNormalizeTitleOptions = { forceRemoveBrackets: true };
-			const normalizedTitleCut1 = normalizeTitle(tagTitle, defaultNormalizeTitleOptions);
-			const normalizedTitleCut2 = normalizeTitle(tagTitle, {
-				...defaultNormalizeTitleOptions,
-				forceRemoveSeparatedEnd: true,
-			});
-			const normalizedFilenameTitleCut = normalizeTitle(filenameTitle, defaultNormalizeTitleOptions);
+			let stage = '0.0';
+			if (!tagArtist || !tagTitle) {
+				logStage(
+					`Теги артиста и/или тайтла не заданы. Берём "теги"из имени файла («${filenameArtist}»/«${filenameTitle}»)`,
+				);
+			}
 
 			const paramsConst = {
 				type: 'release',
@@ -123,17 +140,8 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 				sort_order: 'asc',
 			};
 
-			let stage = '1.0';
-			function logStage(...args: any[]) {
-				if (args.length === 2) {
-					log(`${trPad}[${stage}]`, args[0].padEnd(60), args[1]);
-				} else {
-					log(`${trPad}[${stage}]`, ...args);
-				}
-			}
-
 			let searchResponse;
-
+			stage = '1.0';
 			// Пробуем искать целиком
 			{
 				const newParams = {
@@ -243,7 +251,9 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 				searchResponse = await discogsRequest.get('/database/search', {
 					params: {
 						...newParams,
-						...paramsConst,
+						type: 'release',
+						per_page: 3,
+						// ...paramsConst, - здесь это вредно, т.к. можно найти левый трек
 					},
 				});
 			}
@@ -279,7 +289,7 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 							});
 						} else {
 							logStage(
-								`✗ НЕ ищем НЕСТРОГО из имени файла артист + тайтлОбрез, т.к. тайтлОбрез совпадает`
+								`✗ НЕ ищем НЕСТРОГО из имени файла артист + тайтлОбрез, т.к. тайтлОбрез совпадает`,
 							);
 						}
 					}
@@ -315,35 +325,44 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 							log(`${trPad}${trPad}✓ Трек найден: «${matchingTrack.title}»`);
 						} else {
 							log(
-								`${trPad}${trPad}Трек НЕ найден в релизе ${releaseData.id}, берём теги релиза не глядя. Искали название трека «${normalizedTitle}»`
+								`${trPad}${trPad}Трек НЕ найден в релизе ${releaseData.id}, берём теги релиза не глядя. Искали название трека «${normalizedTitle}»`,
 							);
 						}
-						const genresStr = release?.genres?.join(', ') || '';
+						let genresStr =
+							// Заменяю длинное слово Electronic на короткое, потому что оно почти везде.
+							release?.genres
+								?.map?.((ge: string) => (ge.toLowerCase() === 'electronic' ? 'El.' : ge))
+								?.join(', ') || '';
 						const stylesStr = release?.styles?.join(', ') || '';
 						const genreStyle = [genresStr, stylesStr].filter(Boolean).join(` ${genreDelimiter} `);
-						return { genreStyle, discogsReleaseData: release };
+						return { genreStyle, discogsReleaseData: release, taggerStage: stage };
 					}
 				} catch (e) {
 					log(`${trPad}Error checking release ${releaseData.id}: ${(e as Error).message}`);
 				}
-
-				// Be nice to Discogs API
-				await new Promise((resolve) => setTimeout(resolve, 500));
 			}
 
-			log(`${trPad}No matching tracks found in any releases`);
+			log(`${trPad}Трек не найден ни в одном релизе`);
 			return null;
+
+			function logStage(...args: any[]) {
+				if (args.length === 2) {
+					log(`${trPad}[${stage}]`, args[0].padEnd(60), args[1]);
+				} else {
+					log(`${trPad}[${stage}]`, ...args);
+				}
+			}
 		} catch (error) {
 			const errorFileArg = `${fileName} (tagArtist: ${tagArtist}, tagTitle: ${tagTitle})`;
 			if (axios.isAxiosError(error)) {
 				log(
-					`${trPad}Discogs API responded error for ${errorFileArg}: ${error.response?.status} - ${error.response?.data.message}`
+					`${trPad}Discogs API responded error for ${errorFileArg}: ${error.response?.status} - ${error.response?.data.message} (discogsRequestDelay: ${discogsRequestDelay}ms)`,
 				);
 			} else {
 				log(
 					`${trPad}getDataFromDiscogs error for ${errorFileArg}: ${(error as Error).message}.\n${
 						(error as Error).stack
-					}`
+					}`,
 				);
 			}
 			return null;
@@ -355,45 +374,78 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 		const fileNameWithoutExt = path.basename(filePath, path.extname(filePath));
 		try {
 			const existingTags = ID3.read(filePath);
-			const { artist: tagArtist, title: tagTitle } = existingTags;
+			const { artist: tagArtist, title: tagTitle, year: yearOld, album: tagAlbum } = existingTags;
 			log(`${'-'.padEnd(66, '-')}`);
 			log(`Берём в работу файл: «${fileName}». Тег артиста: «${tagArtist}». Тег тайтла: «${tagTitle}»`);
 
 			const verTagName1 = 'gtagger_version'; // тут оригинальный кастомный тег
 			const verTagName2 = 'internetRadioName'; // тут пользуемся чужим во славу сатаны и чтобы либа не ругалась
-			const verTagValue = `gtagger_v${appVersion}`;
-			if (!forceWriteTags && existingTags[verTagName2] === verTagValue) {
+			const verTagName3 = 'comment'; // тут пользуемся чужим во славу сатаны и чтобы либа не ругалась
+			const stageTagName1 = 'gtagger_stage'; // кастомный тег
+			const verTagValuePrefix = `gtagger_v`;
+			const verTagValue = `${verTagValuePrefix}${appVersion}`;
+			const verTagNameEffective = verTagName2;
+
+			const allKindsOfNames = getAllKindsOfNames(tagArtist, tagTitle, fileNameWithoutExt);
+			const { fixedTagArtist, fixedTagTitle, filenameArtist, filenameTitle } = allKindsOfNames;
+
+			const skippedItemBase = {
+				filePath,
+				allKindsOfNames,
+				existingTags,
+			};
+
+			// TODO условие, по которому будет парситься минимальная версия из CLI
+			const fileProcessedWithCurrentVersion = existingTags[verTagNameEffective] === verTagValue;
+
+			if (!forceWriteTags && fileProcessedWithCurrentVersion) {
 				log(
-					`${trPad}Файл уже обработан той же версией приложения (${appVersion}). Тег ${verTagName2}: ${verTagValue}. Будем пропускать, но не сейчас. Или удалить блин ${verTagName2} тег?`
+					`${trPad}Файл уже обработан той же версией приложения (${appVersion}). Судим по тегу ${verTagNameEffective}`,
 				);
+				return {
+					isWroteTags: false,
+					isSkipped: true,
+					skippedItem: {
+						skippedReason: 'ALREADY_PROCESSED',
+						...skippedItemBase,
+					},
+				};
 			}
-			const researchResult = await getDataFromDiscogs(tagArtist, tagTitle, fileNameWithoutExt);
+			const researchResult = await getDataFromDiscogs(fixedTagArtist, fixedTagTitle, fileNameWithoutExt);
 
 			// Задержка чтобы не долбить Discogs. TODO подумать, как её вырубить там, где не нужно
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 
 			if (researchResult) {
-				const { genreStyle, discogsReleaseData } = researchResult;
+				const { genreStyle, discogsReleaseData, taggerStage } = researchResult;
 				const { year: yearNew, country } = discogsReleaseData;
 				const yearNewStr = `${yearNew}`; // винда только так год видит, скотина!
 				const yearNewStrExt = `${yearNew}-01-01`; // винда только так год видит, скотина!
 				const newYearValue = yearNewStr;
-				// дата пишется, как DDMM!
-				// если года нет, то и хуй с ней. Или нет, лучше вообще хуй с ней
+				if (yearOld && yearOld !== newYearValue) {
+					log(`-------> Ахтунг! Год существует: ${yearOld} и не равен полученному: ${yearNewStr}`);
+				}
+				// дата пишется, как DDMM! если года нет, то и хуй с ней. Или нет, лучше вообще хуй с ней
 				// const newDateValue = newYearValue ? existingTags.date : null;
 				// TODO удалить нафиг date|TDAT, она видна только в фубаре правда, но ладно
+				// соответствие тегов и колонок эксплорера https://learn.microsoft.com/en-us/windows/win32/wmformat/id3-tag-support
 				const newDateValue = undefined;
+				const discogsArtists = researchResult?.discogsReleaseData?.artists
+					?.map?.((art) => art.name)
+					.join?.(', ');
+				const discogsAlbum = researchResult?.discogsReleaseData?.title;
 				const tagsToUpdate = {
 					// чтобы в виндовс-эксплорере можно было вывести колонку и поискать по ней. Формат тега comment такой странный потому что ID3.update ругается (TODO расследовать ВТФ)
 					year: newYearValue, // по идее пишет само в TYER, но на всякий случай явно укажем тоже
 					// TYER: yearNewStr, // тоже год, но для Win10 Explorer
 					// TDRC: undefined, // If the year still doesn’t appear, try removing TDRC (if present) since Windows may prioritize it incorrectly
 					genre: genreStyle,
+					[stageTagName1]: taggerStage,
 					[verTagName1]: verTagValue,
 					[verTagName2]: verTagValue,
-					comment: {
+					[verTagName3]: {
 						text: verTagValue,
-						shortText: verTagValue,
+						// shortText: verTagValue,
 						language: 'eng',
 					},
 					// Country is written twice because no single frame works everywhere:
@@ -409,43 +461,41 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 						conductor: country,
 						userDefinedText: [{ description: 'COUNTRY', value: country }],
 					}),
-					// ещё надо попробовать windows media attributes и NTFS metadata
+					// Если в тегах нет артиста - проставляем из дискогса либо из имени файла, чтобы хоть какой-то был
+					artist: fixedTagArtist || discogsArtists || filenameArtist,
+					// Если в тегах нет тайтла - проставляем из дискогса либо из имени файла, чтобы хоть какой-то был
+					title: fixedTagTitle || filenameTitle,
+					album: fixWin1251(tagAlbum || discogsAlbum),
 				};
-				if (forceWriteTags || areTagsEqual(existingTags, tagsToUpdate)) {
+
+				if (!areTagsEqual(existingTags, tagsToUpdate) || forceWriteTags) {
 					ID3.update(tagsToUpdate, filePath); // последним аргументом можно насовать опций, например { id3v2Only: true } или {version: { major: 3, minor: 0 } }
 					log(`${trPad}Теги прописываются: ${JSON.stringify(tagsToUpdate)}`);
-					// соответствие тегов и колонок эксплорера https://learn.microsoft.com/en-us/windows/win32/wmformat/id3-tag-support
-				} else {
-					log(`${trPad}Значения тегов совпали, файл не обновляем`);
+					return { isWroteTags: true, genre: genreStyle };
 				}
-				if ((tagArtist || '').toLowerCase().includes('midway')) {
-					log(`${trPad}Старые теги!`, existingTags);
-				}
-				return { success: true, genre: genreStyle };
+				log(`${trPad}Значения тегов совпали, файл не обновляем`);
+				return { isWroteTags: false, isTagsUnchanged: true, genre: genreStyle };
 
-				/** обновляем файло только если сменился жанр+год genreOld+yearOld. Версию теггера не проверяем и не обновляем */
+				/** обновляем файло только, если сменились теги помимо тех, куда пишется версия теггера */
 				function areTagsEqual(oldTags: Record<string, any>, newTags: Record<string, any>): boolean {
 					return Object.entries(newTags)
-						.filter(([key]) => key !== verTagName1 && key !== verTagName2) // версию не считаем
+						.filter(([key]) => ![verTagName1, verTagName2, verTagName3].includes(key)) // версию не считаем
 						.every(([key, value]) => oldTags[key] === value);
 				}
 			}
 
 			log(`✗ У данного трека не найден жанр`);
 			return {
-				success: false,
-				skipped: true,
+				isWroteTags: false,
+				isSkipped: true,
 				skippedItem: {
 					skippedReason: 'NO_DISCOGS_RESULT',
-					filePath,
-					// ровно то же, что происходит внутри getDataFromDiscogs блин, но тут нужно, чтобы сразу врубиться, что пошло не так
-					allKindsOfNames: getAllKindsOfNames(tagArtist, tagTitle, fileName),
-					existingTags,
+					...skippedItemBase,
 				},
 			};
 		} catch (error) {
 			log(`Error processing ${filePath}: ${(error as Error).message}.\n${(error as Error).stack}`);
-			return { success: false, error: (error as Error).message };
+			return { isWroteTags: false, error: (error as Error).message };
 		}
 	}
 
