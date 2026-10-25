@@ -18,11 +18,18 @@ Tags are written as ID3v2.3 via `node-id3`. Data comes from Discogs; artist/titl
 | Genre / style | `TCON` | Genre | `%genre%` |
 | Country | `TPE3` | Conductors | `%conductor%` |
 | Country | `TXXX:COUNTRY` | - | `%country%` |
-| g-tagger version | `TRSN`, `COMM` | - | `%comment%` (`COMM`) |
+| g-tagger version (`g-tagger v1.6.0`) | `TCOP` | Copyright | `%copyright%` |
+| Processing marker (JSON) | `TXXX:GTAGGER` | - | `%gtagger%` |
 
 Notes:
 - Country is written twice: Explorer ignores `TXXX` frames, and ID3v2.3 has no standard country frame. The
   Explorer column "Country/region" is unrelated to mp3 files and always stays empty.
+- `TCOP` is overwritten, even if it already holds a real copyright.
+- `TXXX:GTAGGER` holds `{"version":"1.6.0","stage":"2.1","date":"<ISO timestamp>"}`, where `stage` is the
+  Discogs search stage that found the release. A file is skipped as already processed when the marker `version`
+  equals the app version. The marker itself is ignored when comparing old and new tags, but `TCOP` is not, so
+  a new app version always rewrites the file.
+- Temporary: `TRSN` and `COMM` are deleted when they start with `gtagger` (the version written by old releases).
 - Explorer columns were checked on Windows 10 by reading Shell properties of a tagged test file. Explorer
   does not display `TXXX`, `TRSN`, `COMM` (as written by `node-id3`), `TIT1`, `TMOO`, `TOPE`, `TPE4`.
 

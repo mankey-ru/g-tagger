@@ -24,6 +24,21 @@ type GtaggerStats = {
 	failed: number;
 };
 
+/** JSON value of the TXXX:GTAGGER frame */
+type GtaggerMarker = {
+	/** app version without "v" prefix */
+	version: string;
+	/** search stage at which Discogs data was found, e.g. "2.1" */
+	stage: string;
+	/** ISO timestamp of processing */
+	date: string;
+};
+
+type UserDefinedTextFrame = {
+	description: string;
+	value: string;
+};
+
 type GtaggerSkippedItem = {
 	skippedReason: string;
 	filePath: string;

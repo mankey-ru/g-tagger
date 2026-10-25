@@ -378,14 +378,6 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 			log(`${'-'.padEnd(66, '-')}`);
 			log(`Берём в работу файл: «${fileName}». Тег артиста: «${tagArtist}». Тег тайтла: «${tagTitle}»`);
 
-			const verTagName1 = 'gtagger_version'; // тут оригинальный кастомный тег
-			const verTagName2 = 'internetRadioName'; // тут пользуемся чужим во славу сатаны и чтобы либа не ругалась
-			const verTagName3 = 'comment'; // тут пользуемся чужим во славу сатаны и чтобы либа не ругалась
-			const stageTagName1 = 'gtagger_stage'; // кастомный тег
-			const verTagValuePrefix = `gtagger_v`;
-			const verTagValue = `${verTagValuePrefix}${appVersion}`;
-			const verTagNameEffective = verTagName2;
-
 			const allKindsOfNames = getAllKindsOfNames(tagArtist, tagTitle, fileNameWithoutExt);
 			const { fixedTagArtist, fixedTagTitle, filenameArtist, filenameTitle } = allKindsOfNames;
 
@@ -396,11 +388,11 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 			};
 
 			// TODO условие, по которому будет парситься минимальная версия из CLI
-			const fileProcessedWithCurrentVersion = existingTags[verTagNameEffective] === verTagValue;
+			const fileProcessedWithCurrentVersion = readGtaggerMarker(existingTags)?.version === appVersion;
 
 			if (!forceWriteTags && fileProcessedWithCurrentVersion) {
 				log(
-					`${trPad}Файл уже обработан той же версией приложения (${appVersion}). Судим по тегу ${verTagNameEffective}`,
+					`${trPad}Файл уже обработан той же версией приложения (${appVersion}). Судим по тегу TXXX:${markerTxxxDescription}`,
 				);
 				return {
 					isWroteTags: false,
@@ -435,19 +427,20 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 					.join?.(', ');
 				const discogsAlbum = researchResult?.discogsReleaseData?.title;
 				const tagsToUpdate = {
-					// чтобы в виндовс-эксплорере можно было вывести колонку и поискать по ней. Формат тега comment такой странный потому что ID3.update ругается (TODO расследовать ВТФ)
 					year: newYearValue, // по идее пишет само в TYER, но на всякий случай явно укажем тоже
 					// TYER: yearNewStr, // тоже год, но для Win10 Explorer
 					// TDRC: undefined, // If the year still doesn’t appear, try removing TDRC (if present) since Windows may prioritize it incorrectly
 					genre: genreStyle,
-					[stageTagName1]: taggerStage,
-					[verTagName1]: verTagValue,
-					[verTagName2]: verTagValue,
-					[verTagName3]: {
-						text: verTagValue,
-						// shortText: verTagValue,
-						language: 'eng',
-					},
+					// Human-readable version for the Explorer "Copyright" column; overwrites any existing TCOP.
+					// It takes part in areTagsEqual, so a new app version always rewrites the file and refreshes the marker
+					copyright: `g-tagger v${appVersion}`,
+					// TEMPORARY: one-time cleanup of the version that old releases wrote to TRSN and COMM.
+					// Remove after the big collection has been processed once.
+					// undefined makes ID3.update delete the frame
+					...(String(existingTags.internetRadioName ?? '').startsWith('gtagger') && {
+						internetRadioName: undefined,
+					}),
+					...(String(existingTags.comment?.text ?? '').startsWith('gtagger') && { comment: undefined }),
 					// Country is written twice because no single frame works everywhere:
 					// - ID3v2.3 has no standard country frame; TXXX:COUNTRY is the de facto convention
 					//   (foobar2000 shows it as %country%), but the Windows MP3 property handler ignores
@@ -457,10 +450,18 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 					//   TPUB (Publisher) is the label, TKEY (Initial key) is read by DJ software,
 					//   TIT3 (Subtitle) carries real data, TENC (Encoded by) is often pre-filled,
 					//   TIT1/TMOO/TOPE/TPE4 are not shown by Explorer at all.
-					...(country && {
-						conductor: country,
-						userDefinedText: [{ description: 'COUNTRY', value: country }],
-					}),
+					...(country && { conductor: country }),
+					userDefinedText: [
+						...(country ? [{ description: 'COUNTRY', value: country }] : []),
+						{
+							description: markerTxxxDescription,
+							value: JSON.stringify({
+								version: appVersion,
+								stage: taggerStage,
+								date: new Date().toISOString(),
+							} satisfies GtaggerMarker),
+						},
+					],
 					// Если в тегах нет артиста - проставляем из дискогса либо из имени файла, чтобы хоть какой-то был
 					artist: fixedTagArtist || discogsArtists || filenameArtist,
 					// Если в тегах нет тайтла - проставляем из дискогса либо из имени файла, чтобы хоть какой-то был
@@ -476,11 +477,21 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 				log(`${trPad}Значения тегов совпали, файл не обновляем`);
 				return { isWroteTags: false, isTagsUnchanged: true, genre: genreStyle };
 
-				/** обновляем файло только, если сменились теги помимо тех, куда пишется версия теггера */
+				/** обновляем файло только, если сменились теги (маркер TXXX:GTAGGER не считаем) */
 				function areTagsEqual(oldTags: Record<string, any>, newTags: Record<string, any>): boolean {
-					return Object.entries(newTags)
-						.filter(([key]) => ![verTagName1, verTagName2, verTagName3].includes(key)) // версию не считаем
-						.every(([key, value]) => oldTags[key] === value);
+					return Object.entries(newTags).every(([key, value]) =>
+						key === 'userDefinedText' ? areUserDefinedTextsEqual(oldTags[key], value) : oldTags[key] === value,
+					);
+				}
+
+				/** TXXX frames are compared by content; the marker changes on every run, so it is ignored */
+				function areUserDefinedTextsEqual(oldFrames: unknown, newFrames: UserDefinedTextFrame[]): boolean {
+					const oldList = Array.isArray(oldFrames) ? (oldFrames as UserDefinedTextFrame[]) : [];
+					return newFrames
+						.filter((frame) => frame.description !== markerTxxxDescription)
+						.every((frame) =>
+							oldList.some((old) => old.description === frame.description && old.value === frame.value),
+						);
 				}
 			}
 
@@ -517,6 +528,19 @@ export async function mainFunc(musDir: string, cliOptions: GtaggerCliOptions): P
 
 		await walkDir(directory);
 		return files;
+	}
+}
+
+// Machine-readable processing marker: TXXX:GTAGGER with JSON value, not displayed anywhere
+const markerTxxxDescription = 'GTAGGER';
+
+function readGtaggerMarker(tags: Record<string, any>): Partial<GtaggerMarker> | undefined {
+	const frames: UserDefinedTextFrame[] = Array.isArray(tags.userDefinedText) ? tags.userDefinedText : [];
+	const markerFrame = frames.find((frame) => frame.description === markerTxxxDescription);
+	try {
+		return markerFrame && JSON.parse(markerFrame.value);
+	} catch {
+		return undefined;
 	}
 }
 
