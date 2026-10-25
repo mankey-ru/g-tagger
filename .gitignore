@@ -12,3 +12,8 @@ dist
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Local-only files
+*.lnk
+tmp/
+AGENTS.md
